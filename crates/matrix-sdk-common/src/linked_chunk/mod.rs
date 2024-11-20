@@ -952,12 +952,12 @@ pub struct ChunkIdentifier(u64);
 
 impl ChunkIdentifier {
     /// Create a new [`ChunkIdentifier`].
-    pub(super) fn new(identifier: u64) -> Self {
+    pub fn new(identifier: u64) -> Self {
         Self(identifier)
     }
 
     /// Get the underlying identifier.
-    fn index(&self) -> u64 {
+    pub fn index(&self) -> u64 {
         self.0
     }
 }

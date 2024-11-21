@@ -236,12 +236,14 @@ impl RoomEventCacheInner {
     ) -> Self {
         let sender = Sender::new(32);
 
-        let weak_room = WeakRoom::new(client, room_id);
+        let event_cache_store =
+            client.get().expect("TODO replace with error handling?").event_cache_store().clone();
+        let weak_room = WeakRoom::new(client, room_id.clone());
 
         Self {
             room_id: weak_room.room_id().to_owned(),
             state: RwLock::new(RoomEventCacheState {
-                events: RoomEvents::default(),
+                events: RoomEvents::new(room_id, event_cache_store),
                 waited_for_initial_prev_token: false,
             }),
             all_events: all_events_cache,

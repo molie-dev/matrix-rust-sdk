@@ -16,11 +16,11 @@ use std::cmp::Ordering;
 
 use eyeball_im::VectorDiff;
 pub use matrix_sdk_base::event_cache::{Event, Gap};
-use matrix_sdk_base::linked_chunk::AsVector;
+use matrix_sdk_base::{event_cache::store::EventCacheStoreLock, linked_chunk::AsVector};
 use matrix_sdk_common::linked_chunk::{
     Chunk, ChunkIdentifier, EmptyChunk, Error, Iter, LinkedChunk, Position,
 };
-use ruma::OwnedEventId;
+use ruma::{OwnedEventId, OwnedRoomId};
 use tracing::{debug, error, warn};
 
 use super::super::deduplicator::{Decoration, Deduplicator};
@@ -28,7 +28,6 @@ use super::super::deduplicator::{Decoration, Deduplicator};
 const DEFAULT_CHUNK_CAPACITY: usize = 128;
 
 /// This type represents all events of a single room.
-#[derive(Debug)]
 pub struct RoomEvents {
     /// The real in-memory storage for all the events.
     chunks: LinkedChunk<DEFAULT_CHUNK_CAPACITY, Event, Gap>,
@@ -40,17 +39,17 @@ pub struct RoomEvents {
 
     /// The events deduplicator instance to help finding duplicates.
     deduplicator: Deduplicator,
-}
 
-impl Default for RoomEvents {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Which room this relates to?
+    room: OwnedRoomId,
+
+    /// Event cache in which we'll propagate updates to the underlying chunk.
+    store: EventCacheStoreLock,
 }
 
 impl RoomEvents {
     /// Build a new [`RoomEvents`] struct with zero events.
-    pub fn new() -> Self {
+    pub fn new(room: OwnedRoomId, store: EventCacheStoreLock) -> Self {
         let mut chunks = LinkedChunk::new_with_update_history();
         let chunks_updates_as_vectordiffs = chunks
             .as_vector()
@@ -58,7 +57,36 @@ impl RoomEvents {
             // `as_vector` must return `Some(…)`.
             .expect("`LinkedChunk` must have been constructor with `new_with_update_history`");
 
-        Self { chunks, chunks_updates_as_vectordiffs, deduplicator: Deduplicator::new() }
+        Self {
+            chunks,
+            chunks_updates_as_vectordiffs,
+            deduplicator: Deduplicator::new(),
+            room,
+            store,
+        }
+    }
+
+    /// Create a new [`RoomEvents`] for the sake of testing.
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        // Create a dummy memory store.
+        let store = matrix_sdk_base::event_cache::store::MemoryStore::new();
+        let locked_store = EventCacheStoreLock::new(store, "hodlr".to_owned());
+
+        let mut chunks = LinkedChunk::new();
+        let chunks_updates_as_vectordiffs = chunks
+            .as_vector()
+            // SAFETY: The `LinkedChunk` has been built with `new_with_update_history`, so
+            // `as_vector` must return `Some(…)`.
+            .expect("`LinkedChunk` must have been constructor with `new_with_update_history`");
+
+        Self {
+            chunks,
+            chunks_updates_as_vectordiffs,
+            deduplicator: Deduplicator::new(),
+            room: matrix_sdk_test::DEFAULT_TEST_ROOM_ID.to_owned(),
+            store: locked_store,
+        }
     }
 
     /// Clear all events.
@@ -381,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_new_room_events_has_zero_events() {
-        let room_events = RoomEvents::new();
+        let room_events = RoomEvents::new_for_tests();
 
         assert_eq!(room_events.events().count(), 0);
     }
@@ -392,7 +420,7 @@ mod tests {
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0, event_1]);
         room_events.push_events([event_2]);
@@ -412,7 +440,7 @@ mod tests {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0.clone(), event_1]);
 
@@ -441,7 +469,7 @@ mod tests {
     fn test_push_events_with_duplicates_on_a_chunk_of_one_event() {
         let (event_id_0, event_0) = new_event("$ev0");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         // The first chunk can never be removed, so let's create a gap, then a new
         // chunk.
@@ -473,7 +501,7 @@ mod tests {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0]);
         room_events.push_gap(Gap { prev_token: "hello".to_owned() });
@@ -509,7 +537,7 @@ mod tests {
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0, event_1]);
 
@@ -539,7 +567,7 @@ mod tests {
         let (event_id_2, event_2) = new_event("$ev2");
         let (event_id_3, event_3) = new_event("$ev3");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0.clone(), event_1, event_2]);
 
@@ -578,7 +606,7 @@ mod tests {
     fn test_insert_events_at_with_duplicates_on_a_chunk_of_one_event() {
         let (event_id_0, event_0) = new_event("$ev0");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         // The first chunk can never be removed, so let's create a gap, then a new
         // chunk.
@@ -609,7 +637,7 @@ mod tests {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0, event_1]);
 
@@ -654,7 +682,7 @@ mod tests {
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0]);
         room_events.push_gap(Gap { prev_token: "hello".to_owned() });
@@ -695,7 +723,7 @@ mod tests {
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         room_events.push_events([event_0.clone(), event_1]);
         room_events.push_gap(Gap { prev_token: "hello".to_owned() });
@@ -748,7 +776,7 @@ mod tests {
         let (event_id_3, event_3) = new_event("$ev3");
 
         // Push some events.
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
         room_events.push_events([event_0, event_1]);
         room_events.push_gap(Gap { prev_token: "hello".to_owned() });
         room_events.push_events([event_2, event_3]);
@@ -792,7 +820,7 @@ mod tests {
         let (event_id_0, _event_0) = new_event("$ev0");
 
         // Push ZERO event.
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
 
         assert_events_eq!(room_events.events(), []);
 
@@ -819,7 +847,7 @@ mod tests {
         let (event_id_8, event_8) = new_event("$ev8");
 
         // Push some events.
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
         room_events.push_events([event_0, event_1, event_2, event_3, event_4, event_5, event_6]);
         room_events.push_gap(Gap { prev_token: "raclette".to_owned() });
         room_events.push_events([event_7, event_8]);
@@ -973,7 +1001,7 @@ mod tests {
         let (event_id_3, event_3) = new_event("$ev3");
 
         // Push some events.
-        let mut room_events = RoomEvents::new();
+        let mut room_events = RoomEvents::new_for_tests();
         room_events.push_events([event_0, event_1]);
         room_events.push_gap(Gap { prev_token: "raclette".to_owned() });
         room_events.push_events([event_2]);

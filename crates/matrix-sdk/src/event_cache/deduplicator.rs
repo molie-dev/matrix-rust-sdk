@@ -166,7 +166,7 @@ mod tests {
         let event_2 = sync_timeline_event(&event_id_2);
 
         let deduplicator = Deduplicator::new();
-        let existing_events = RoomEvents::new();
+        let existing_events = RoomEvents::new_for_tests();
 
         let mut events =
             deduplicator.scan_and_learn([event_0, event_1, event_2].into_iter(), &existing_events);
@@ -192,7 +192,7 @@ mod tests {
         let event_1 = sync_timeline_event(&event_id_1);
 
         let deduplicator = Deduplicator::new();
-        let existing_events = RoomEvents::new();
+        let existing_events = RoomEvents::new_for_tests();
 
         let mut events = deduplicator.scan_and_learn(
             [
@@ -227,7 +227,7 @@ mod tests {
         let event_2 = sync_timeline_event(&event_id_2);
 
         let deduplicator = Deduplicator::new();
-        let mut existing_events = RoomEvents::new();
+        let mut existing_events = RoomEvents::new_for_tests();
 
         // Simulate `event_1` is inserted inside `existing_events`.
         {
@@ -292,7 +292,7 @@ mod tests {
 
         for _ in 0..num_rooms {
             let dedup = Deduplicator::new();
-            let existing_events = RoomEvents::new();
+            let existing_events = RoomEvents::new_for_tests();
 
             for i in 0..num_events {
                 let event = sync_timeline_event(&EventId::parse(format!("$event{i}")).unwrap());

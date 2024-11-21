@@ -173,22 +173,14 @@ impl RoomPagination {
         if let Some(gap_identifier) = gap_identifier {
             let new_position = {
                 // Replace the gap by new events.
-                let new_chunk = room_events
-                    .replace_gap_at(sync_events, gap_identifier)
-                    // SAFETY: we are sure that `gap_identifier` represents a valid
-                    // `ChunkIdentifier` for a `Gap` chunk.
-                    .expect("The `gap_identifier` must represent a `Gap`");
-
-                new_chunk.first_position()
+                let new_chunk_first_position =
+                    room_events.replace_gap_at(sync_events, gap_identifier).await?;
+                new_chunk_first_position
             };
 
             // And insert a new gap if there is any `prev_token`.
             if let Some(prev_token_gap) = prev_token {
-                room_events
-                    .insert_gap_at(prev_token_gap, new_position)
-                    // SAFETY: we are sure that `new_position` represents a valid
-                    // `ChunkIdentifier` for an `Item` chunk.
-                    .expect("The `new_position` must represent an `Item`");
+                room_events.insert_gap_at(prev_token_gap, new_position).await?;
             }
 
             trace!("replaced gap with new events from backpagination");
@@ -207,29 +199,19 @@ impl RoomPagination {
             // Is there a first item? Insert at this position.
             Some(first_event_pos) => {
                 if let Some(prev_token_gap) = prev_token {
-                    room_events
-                            .insert_gap_at(prev_token_gap, first_event_pos)
-                            // SAFETY: The `first_event_pos` can only be an `Item` chunk, it's
-                            // an invariant of `LinkedChunk`. Also, it can only represent a valid
-                            // `ChunkIdentifier` as the data structure isn't modified yet.
-                            .expect("`first_event_pos` must point to a valid `Item` chunk when inserting a gap");
+                    room_events.insert_gap_at(prev_token_gap, first_event_pos).await?;
                 }
 
-                room_events
-                        .insert_events_at(sync_events, first_event_pos)
-                        // SAFETY: The `first_event_pos` can only be an `Item` chunk, it's
-                        // an invariant of `LinkedChunk`. The chunk it points to has not been
-                        // removed.
-                        .expect("The `first_event_pos` must point to a valid `Item` chunk when inserting events");
+                room_events.insert_events_at(sync_events, first_event_pos).await?;
             }
 
             // There is no first item. Let's simply push.
             None => {
                 if let Some(prev_token_gap) = prev_token {
-                    room_events.push_gap(prev_token_gap);
+                    room_events.push_gap(prev_token_gap).await?;
                 }
 
-                room_events.push_events(sync_events);
+                room_events.push_events(sync_events).await?;
             }
         }
 
@@ -341,15 +323,21 @@ mod tests {
             let (room_event_cache, _drop_handlers) = event_cache.for_room(room_id).await.unwrap();
 
             // When I only have events in a room,
-            room_event_cache.inner.state.write().await.events.push_events([
-                SyncTimelineEvent::new(sync_timeline_event!({
+            room_event_cache
+                .inner
+                .state
+                .write()
+                .await
+                .events
+                .push_events([SyncTimelineEvent::new(sync_timeline_event!({
                     "sender": "b@z.h",
                     "type": "m.room.message",
                     "event_id": "$ida",
                     "origin_server_ts": 12344446,
                     "content": { "body":"yolo", "msgtype": "m.text" },
-                })),
-            ]);
+                }))])
+                .await
+                .unwrap();
 
             let pagination = room_event_cache.pagination();
 
@@ -359,7 +347,7 @@ mod tests {
             assert!(found.is_none());
 
             // Reset waited_for_initial_prev_token state.
-            pagination.inner.state.write().await.reset();
+            pagination.inner.state.write().await.reset().await.unwrap();
 
             // If I wait for a back-pagination token for 0 seconds,
             let before = Instant::now();
@@ -371,7 +359,7 @@ mod tests {
             assert!(waited.as_secs() < 1);
 
             // Reset waited_for_initial_prev_token state.
-            pagination.inner.state.write().await.reset();
+            pagination.inner.state.write().await.reset().await.unwrap();
 
             // If I wait for a back-pagination token for 1 second,
             let before = Instant::now();
@@ -401,14 +389,17 @@ mod tests {
             // When I have events and multiple gaps, in a room,
             {
                 let room_events = &mut room_event_cache.inner.state.write().await.events;
-                room_events.push_gap(Gap { prev_token: expected_token.clone() });
-                room_events.push_events([SyncTimelineEvent::new(sync_timeline_event!({
-                    "sender": "b@z.h",
-                    "type": "m.room.message",
-                    "event_id": "$ida",
-                    "origin_server_ts": 12344446,
-                    "content": { "body":"yolo", "msgtype": "m.text" },
-                }))]);
+                room_events.push_gap(Gap { prev_token: expected_token.clone() }).await.unwrap();
+                room_events
+                    .push_events([SyncTimelineEvent::new(sync_timeline_event!({
+                        "sender": "b@z.h",
+                        "type": "m.room.message",
+                        "event_id": "$ida",
+                        "origin_server_ts": 12344446,
+                        "content": { "body":"yolo", "msgtype": "m.text" },
+                    }))])
+                    .await
+                    .unwrap();
             }
 
             let pagination = room_event_cache.pagination();
@@ -464,7 +455,9 @@ mod tests {
                     .write()
                     .await
                     .events
-                    .push_gap(Gap { prev_token: cloned_expected_token });
+                    .push_gap(Gap { prev_token: cloned_expected_token })
+                    .await
+                    .unwrap();
             });
 
             let pagination = room_event_cache.pagination();

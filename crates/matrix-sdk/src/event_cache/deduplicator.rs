@@ -142,7 +142,7 @@ pub enum Decoration<I> {
 mod tests {
     use assert_matches2::{assert_let, assert_matches};
     use matrix_sdk_base::deserialized_responses::SyncTimelineEvent;
-    use matrix_sdk_test::event_factory::EventFactory;
+    use matrix_sdk_test::{async_test, event_factory::EventFactory};
     use ruma::{owned_event_id, user_id, EventId};
 
     use super::*;
@@ -216,8 +216,8 @@ mod tests {
         assert!(events.next().is_none());
     }
 
-    #[test]
-    fn test_filter_duplicates_with_existing_events() {
+    #[async_test]
+    async fn test_filter_duplicates_with_existing_events() {
         let event_id_0 = owned_event_id!("$ev0");
         let event_id_1 = owned_event_id!("$ev1");
         let event_id_2 = owned_event_id!("$ev2");
@@ -242,7 +242,7 @@ mod tests {
             drop(events); // make the borrow checker happy.
 
             // Now we can push `event_1` inside `existing_events`.
-            existing_events.push_events([event_1]);
+            existing_events.push_events([event_1]).await.unwrap();
         }
 
         // `event_1` will be duplicated.

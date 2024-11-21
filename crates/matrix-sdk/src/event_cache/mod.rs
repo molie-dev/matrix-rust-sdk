@@ -36,6 +36,9 @@ use std::{
 use eyeball::Subscriber;
 use matrix_sdk_base::{
     deserialized_responses::{AmbiguityChange, SyncTimelineEvent, TimelineEvent},
+    event_cache::store::EventCacheStoreError,
+    linked_chunk,
+    store_locks::LockStoreError,
     sync::RoomUpdates,
 };
 use matrix_sdk_common::executor::{spawn, JoinHandle};
@@ -85,6 +88,19 @@ pub enum EventCacheError {
     /// An error has been observed while back-paginating.
     #[error("Error observed while back-paginating: {0}")]
     BackpaginationError(#[from] PaginatorError),
+
+    /// An error happened while touching the store.
+    #[error(transparent)]
+    StoreError(#[from] EventCacheStoreError),
+
+    /// An error happened while locking the store.
+    #[error(transparent)]
+    LockError(#[from] LockStoreError),
+
+    /// An error happened while manipulating the internal representation of a
+    /// room's events.
+    #[error("The internal state is invalid: {0}")]
+    InvalidInternalState(#[from] linked_chunk::Error),
 
     /// The [`EventCache`] owns a weak reference to the [`Client`] it pertains
     /// to. It's possible this weak reference points to nothing anymore, at
@@ -213,7 +229,9 @@ impl EventCache {
         async move {
             while ignore_user_list_stream.next().await.is_some() {
                 info!("received an ignore user list change");
-                inner.clear_all_rooms().await;
+                if let Err(err) = inner.clear_all_rooms().await {
+                    warn!("error when clearing all room after an ignore list update: {err}");
+                }
             }
         }
         .instrument(span)
@@ -247,7 +265,9 @@ impl EventCache {
                     // no way to reconcile at the moment!
                     // TODO: implement Smart Matching™,
                     warn!(num_skipped, "Lagged behind room updates, clearing all rooms");
-                    inner.clear_all_rooms().await;
+                    if let Err(err) = inner.clear_all_rooms().await {
+                        warn!("error when clearing all room after a lag: {err}");
+                    }
                 }
 
                 Err(RecvError::Closed) => {
@@ -348,7 +368,7 @@ impl EventCacheInner {
     }
 
     /// Clears all the room's data.
-    async fn clear_all_rooms(&self) {
+    async fn clear_all_rooms(&self) -> Result<()> {
         // Note: one must NOT clear the `by_room` map, because if something subscribed
         // to a room update, they would never get any new update for that room, since
         // re-creating the `RoomEventCache` would create a new unrelated sender.
@@ -362,8 +382,10 @@ impl EventCacheInner {
             // error if there aren't any.)
             let _ = room.inner.sender.send(RoomEventCacheUpdate::Clear);
             // Clear all the room state.
-            room.inner.state.write().await.reset();
+            room.inner.state.write().await.reset().await?;
         }
+
+        Ok(())
     }
 
     /// Handles a single set of room updates at once.

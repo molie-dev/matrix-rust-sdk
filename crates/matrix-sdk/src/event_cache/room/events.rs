@@ -18,12 +18,13 @@ use eyeball_im::VectorDiff;
 pub use matrix_sdk_base::event_cache::{Event, Gap};
 use matrix_sdk_base::{event_cache::store::EventCacheStoreLock, linked_chunk::AsVector};
 use matrix_sdk_common::linked_chunk::{
-    Chunk, ChunkIdentifier, EmptyChunk, Error, Iter, LinkedChunk, Position,
+    Chunk, ChunkIdentifier, EmptyChunk, Iter, LinkedChunk, Position,
 };
 use ruma::{OwnedEventId, OwnedRoomId};
 use tracing::{debug, error, warn};
 
 use super::super::deduplicator::{Decoration, Deduplicator};
+use crate::event_cache::EventCacheError;
 
 const DEFAULT_CHUNK_CAPACITY: usize = 128;
 
@@ -73,7 +74,7 @@ impl RoomEvents {
         let store = matrix_sdk_base::event_cache::store::MemoryStore::new();
         let locked_store = EventCacheStoreLock::new(store, "hodlr".to_owned());
 
-        let mut chunks = LinkedChunk::new();
+        let mut chunks = LinkedChunk::new_with_update_history();
         let chunks_updates_as_vectordiffs = chunks
             .as_vector()
             // SAFETY: The `LinkedChunk` has been built with `new_with_update_history`, so
@@ -93,14 +94,27 @@ impl RoomEvents {
     ///
     /// All events, all gaps, everything is dropped, move into the void, into
     /// the ether, forever.
-    pub fn reset(&mut self) {
+    pub async fn reset(&mut self) -> Result<(), EventCacheError> {
         self.chunks.clear();
+        self.maybe_propagate_to_storage().await
+    }
+
+    /// Propagate changes from the in-memory chunk data structure to the
+    /// underlying storage.
+    async fn maybe_propagate_to_storage(&mut self) -> Result<(), EventCacheError> {
+        if let Some(observable_updates) = self.chunks.updates() {
+            let locked_store = self.store.lock().await?;
+
+            locked_store.handle_linked_chunk_updates(&self.room, observable_updates.take()).await?;
+        }
+
+        Ok(())
     }
 
     /// Push events after all events or gaps.
     ///
     /// The last event in `events` is the most recent one.
-    pub fn push_events<I>(&mut self, events: I)
+    pub async fn push_events<I>(&mut self, events: I) -> Result<(), EventCacheError>
     where
         I: IntoIterator<Item = Event>,
     {
@@ -115,15 +129,22 @@ impl RoomEvents {
 
         // Push new `events`.
         self.chunks.push_items_back(unique_events);
+
+        self.maybe_propagate_to_storage().await
     }
 
     /// Push a gap after all events or gaps.
-    pub fn push_gap(&mut self, gap: Gap) {
-        self.chunks.push_gap_back(gap)
+    pub async fn push_gap(&mut self, gap: Gap) -> Result<(), EventCacheError> {
+        self.chunks.push_gap_back(gap);
+        self.maybe_propagate_to_storage().await
     }
 
     /// Insert events at a specified position.
-    pub fn insert_events_at<I>(&mut self, events: I, mut position: Position) -> Result<(), Error>
+    pub async fn insert_events_at<I>(
+        &mut self,
+        events: I,
+        mut position: Position,
+    ) -> Result<(), EventCacheError>
     where
         I: IntoIterator<Item = Event>,
     {
@@ -137,12 +158,20 @@ impl RoomEvents {
         // argument value for each removal.
         self.remove_events_and_update_insert_position(duplicated_event_ids, &mut position);
 
-        self.chunks.insert_items_at(unique_events, position)
+        self.chunks.insert_items_at(unique_events, position)?;
+
+        self.maybe_propagate_to_storage().await
     }
 
     /// Insert a gap at a specified position.
-    pub fn insert_gap_at(&mut self, gap: Gap, position: Position) -> Result<(), Error> {
-        self.chunks.insert_gap_at(gap, position)
+    pub async fn insert_gap_at(
+        &mut self,
+        gap: Gap,
+        position: Position,
+    ) -> Result<(), EventCacheError> {
+        self.chunks.insert_gap_at(gap, position)?;
+
+        self.maybe_propagate_to_storage().await
     }
 
     /// Replace the gap identified by `gap_identifier`, by events.
@@ -150,13 +179,13 @@ impl RoomEvents {
     /// Because the `gap_identifier` can represent non-gap chunk, this method
     /// returns a `Result`.
     ///
-    /// This method returns a reference to the (first if many) newly created
-    /// `Chunk` that contains the `items`.
-    pub fn replace_gap_at<I>(
+    /// This method returns the first position of the (first if many) newly
+    /// created `Chunk` that contains the `items`.
+    pub async fn replace_gap_at<I>(
         &mut self,
         events: I,
         gap_identifier: ChunkIdentifier,
-    ) -> Result<&Chunk<DEFAULT_CHUNK_CAPACITY, Event, Gap>, Error>
+    ) -> Result<Position, EventCacheError>
     where
         I: IntoIterator<Item = Event>,
     {
@@ -171,7 +200,12 @@ impl RoomEvents {
         self.remove_events(duplicated_event_ids);
 
         // Replace the gap by new events.
-        self.chunks.replace_gap_at(unique_events, gap_identifier)
+        let new_gap_first_position =
+            self.chunks.replace_gap_at(unique_events, gap_identifier)?.first_position();
+
+        self.maybe_propagate_to_storage().await?;
+
+        Ok(new_gap_first_position)
     }
 
     /// Search for a chunk, and return its identifier.
@@ -374,7 +408,7 @@ impl RoomEvents {
 mod tests {
     use assert_matches::assert_matches;
     use assert_matches2::assert_let;
-    use matrix_sdk_test::event_factory::EventFactory;
+    use matrix_sdk_test::{async_test, event_factory::EventFactory};
     use ruma::{user_id, EventId, OwnedEventId};
 
     use super::*;
@@ -414,16 +448,16 @@ mod tests {
         assert_eq!(room_events.events().count(), 0);
     }
 
-    #[test]
-    fn test_push_events() {
+    #[async_test]
+    async fn test_push_events() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0, event_1]);
-        room_events.push_events([event_2]);
+        room_events.push_events([event_0, event_1]).await.unwrap();
+        room_events.push_events([event_2]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -435,14 +469,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_push_events_with_duplicates() {
+    #[async_test]
+    async fn test_push_events_with_duplicates() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0.clone(), event_1]);
+        room_events.push_events([event_0.clone(), event_1]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -453,7 +487,7 @@ mod tests {
         );
 
         // Everything is alright. Now let's push a duplicated event.
-        room_events.push_events([event_0]);
+        room_events.push_events([event_0]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -465,16 +499,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_push_events_with_duplicates_on_a_chunk_of_one_event() {
+    #[async_test]
+    async fn test_push_events_with_duplicates_on_a_chunk_of_one_event() {
         let (event_id_0, event_0) = new_event("$ev0");
 
         let mut room_events = RoomEvents::new_for_tests();
 
         // The first chunk can never be removed, so let's create a gap, then a new
         // chunk.
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
-        room_events.push_events([event_0.clone()]);
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
+        room_events.push_events([event_0.clone()]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -484,7 +518,7 @@ mod tests {
         );
 
         // Everything is alright. Now let's push a duplicated event.
-        room_events.push_events([event_0]);
+        room_events.push_events([event_0]).await.unwrap();
 
         // The event has been removed, then the chunk was empty, so removed, and a new
         // chunk has been created with identifier 3.
@@ -496,16 +530,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_push_gap() {
+    #[async_test]
+    async fn test_push_gap() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0]);
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
-        room_events.push_events([event_1]);
+        room_events.push_events([event_0]).await.unwrap();
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
+        room_events.push_events([event_1]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -531,15 +565,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_insert_events_at() {
+    #[async_test]
+    async fn test_insert_events_at() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0, event_1]);
+        room_events.push_events([event_0, event_1]).await.unwrap();
 
         let position_of_event_1 = room_events
             .events()
@@ -548,7 +582,7 @@ mod tests {
             })
             .unwrap();
 
-        room_events.insert_events_at([event_2], position_of_event_1).unwrap();
+        room_events.insert_events_at([event_2], position_of_event_1).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -560,8 +594,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_insert_events_at_with_duplicates() {
+    #[async_test]
+    async fn test_insert_events_at_with_duplicates() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
@@ -569,7 +603,7 @@ mod tests {
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0.clone(), event_1, event_2]);
+        room_events.push_events([event_0.clone(), event_1, event_2]).await.unwrap();
 
         let position_of_event_2 = room_events
             .events()
@@ -588,7 +622,7 @@ mod tests {
         );
 
         // Everything is alright. Now let's insert a duplicated events!
-        room_events.insert_events_at([event_0, event_3], position_of_event_2).unwrap();
+        room_events.insert_events_at([event_0, event_3], position_of_event_2).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -602,16 +636,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_insert_events_at_with_duplicates_on_a_chunk_of_one_event() {
+    #[async_test]
+    async fn test_insert_events_at_with_duplicates_on_a_chunk_of_one_event() {
         let (event_id_0, event_0) = new_event("$ev0");
 
         let mut room_events = RoomEvents::new_for_tests();
 
         // The first chunk can never be removed, so let's create a gap, then a new
         // chunk.
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
-        room_events.push_events([event_0.clone()]);
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
+        room_events.push_events([event_0.clone()]).await.unwrap();
 
         let position_of_event_0 = room_events
             .events()
@@ -620,7 +654,7 @@ mod tests {
             })
             .unwrap();
 
-        room_events.insert_events_at([event_0], position_of_event_0).unwrap();
+        room_events.insert_events_at([event_0], position_of_event_0).await.unwrap();
 
         // Event has been removed, the chunk was empty, but it was kept so that the
         // position was still valid and the new event can be inserted.
@@ -632,14 +666,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_insert_gap_at() {
+    #[async_test]
+    async fn test_insert_gap_at() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0, event_1]);
+        room_events.push_events([event_0, event_1]).await.unwrap();
 
         let position_of_event_1 = room_events
             .events()
@@ -650,6 +684,7 @@ mod tests {
 
         room_events
             .insert_gap_at(Gap { prev_token: "hello".to_owned() }, position_of_event_1)
+            .await
             .unwrap();
 
         assert_events_eq!(
@@ -676,16 +711,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_replace_gap_at() {
+    #[async_test]
+    async fn test_replace_gap_at() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0]);
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
+        room_events.push_events([event_0]).await.unwrap();
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
 
         let chunk_identifier_of_gap = room_events
             .chunks()
@@ -693,7 +728,7 @@ mod tests {
             .unwrap()
             .chunk_identifier();
 
-        room_events.replace_gap_at([event_1, event_2], chunk_identifier_of_gap).unwrap();
+        room_events.replace_gap_at([event_1, event_2], chunk_identifier_of_gap).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -717,16 +752,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_replace_gap_at_with_duplicates() {
+    #[async_test]
+    async fn test_replace_gap_at_with_duplicates() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
 
         let mut room_events = RoomEvents::new_for_tests();
 
-        room_events.push_events([event_0.clone(), event_1]);
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
+        room_events.push_events([event_0.clone(), event_1]).await.unwrap();
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
 
         let chunk_identifier_of_gap = room_events
             .chunks()
@@ -743,7 +778,7 @@ mod tests {
         );
 
         // Everything is alright. Now let's replace a gap with a duplicated event.
-        room_events.replace_gap_at([event_0, event_2], chunk_identifier_of_gap).unwrap();
+        room_events.replace_gap_at([event_0, event_2], chunk_identifier_of_gap).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -768,8 +803,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_remove_events() {
+    #[async_test]
+    async fn test_remove_events() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
@@ -777,9 +812,9 @@ mod tests {
 
         // Push some events.
         let mut room_events = RoomEvents::new_for_tests();
-        room_events.push_events([event_0, event_1]);
-        room_events.push_gap(Gap { prev_token: "hello".to_owned() });
-        room_events.push_events([event_2, event_3]);
+        room_events.push_events([event_0, event_1]).await.unwrap();
+        room_events.push_gap(Gap { prev_token: "hello".to_owned() }).await.unwrap();
+        room_events.push_events([event_2, event_3]).await.unwrap();
 
         assert_events_eq!(
             room_events.events(),
@@ -834,8 +869,8 @@ mod tests {
         assert!(events.next().is_none());
     }
 
-    #[test]
-    fn test_remove_events_and_update_insert_position() {
+    #[async_test]
+    async fn test_remove_events_and_update_insert_position() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
@@ -848,9 +883,12 @@ mod tests {
 
         // Push some events.
         let mut room_events = RoomEvents::new_for_tests();
-        room_events.push_events([event_0, event_1, event_2, event_3, event_4, event_5, event_6]);
-        room_events.push_gap(Gap { prev_token: "raclette".to_owned() });
-        room_events.push_events([event_7, event_8]);
+        room_events
+            .push_events([event_0, event_1, event_2, event_3, event_4, event_5, event_6])
+            .await
+            .unwrap();
+        room_events.push_gap(Gap { prev_token: "raclette".to_owned() }).await.unwrap();
+        room_events.push_events([event_7, event_8]).await.unwrap();
 
         assert_eq!(room_events.chunks().count(), 3);
 
@@ -993,8 +1031,8 @@ mod tests {
         assert_eq!(room_events.chunks().count(), 3);
     }
 
-    #[test]
-    fn test_reset() {
+    #[async_test]
+    async fn test_reset() {
         let (event_id_0, event_0) = new_event("$ev0");
         let (event_id_1, event_1) = new_event("$ev1");
         let (event_id_2, event_2) = new_event("$ev2");
@@ -1002,9 +1040,9 @@ mod tests {
 
         // Push some events.
         let mut room_events = RoomEvents::new_for_tests();
-        room_events.push_events([event_0, event_1]);
-        room_events.push_gap(Gap { prev_token: "raclette".to_owned() });
-        room_events.push_events([event_2]);
+        room_events.push_events([event_0, event_1]).await.unwrap();
+        room_events.push_gap(Gap { prev_token: "raclette".to_owned() }).await.unwrap();
+        room_events.push_events([event_2]).await.unwrap();
 
         // Read the updates as `VectorDiff`.
         let diffs = room_events.updates_as_vector_diffs();
@@ -1028,8 +1066,8 @@ mod tests {
         );
 
         // Now we can reset and see what happens.
-        room_events.reset();
-        room_events.push_events([event_3]);
+        room_events.reset().await.unwrap();
+        room_events.push_events([event_3]).await.unwrap();
 
         // Read the updates as `VectorDiff`.
         let diffs = room_events.updates_as_vector_diffs();

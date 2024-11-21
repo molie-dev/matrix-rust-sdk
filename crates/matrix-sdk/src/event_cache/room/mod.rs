@@ -357,7 +357,7 @@ impl RoomEventCacheInner {
         let mut state = self.state.write().await;
 
         // Reset the room's state.
-        state.reset();
+        state.reset().await?;
 
         // Propagate to observers.
         let _ = self.sender.send(RoomEventCacheUpdate::Clear);
@@ -491,10 +491,10 @@ impl RoomEventCacheInner {
         // events themselves.
         {
             if let Some(prev_token) = &prev_batch {
-                room_events.push_gap(Gap { prev_token: prev_token.clone() });
+                room_events.push_gap(Gap { prev_token: prev_token.clone() }).await?;
             }
 
-            room_events.push_events(sync_timeline_events.clone());
+            room_events.push_events(sync_timeline_events.clone()).await?;
 
             let mut cache = self.all_events.write().await;
             for ev in &sync_timeline_events {
@@ -552,9 +552,10 @@ pub(super) struct RoomEventCacheState {
 
 impl RoomEventCacheState {
     /// Resets this data structure as if it were brand new.
-    pub(super) fn reset(&mut self) {
-        self.events.reset();
+    pub(super) async fn reset(&mut self) -> Result<()> {
+        self.events.reset().await?;
         self.waited_for_initial_prev_token = false;
+        Ok(())
     }
 }
 

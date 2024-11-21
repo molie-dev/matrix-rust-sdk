@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use matrix_sdk_common::deserialized_responses::{
-    UnableToDecryptInfo, UnableToDecryptReason, VerificationLevel,
+    UnableToDecryptInfo, UnableToDecryptReason, VerificationLevel, WithheldReason,
 };
 use ruma::{events::AnySyncTimelineEvent, serde::Raw, MilliSecondsSinceUnixEpoch};
 use serde::Deserialize;
@@ -57,6 +57,18 @@ pub enum UtdCause {
     /// be confused with pre-join or pre-invite messages (see
     /// [`UtdCause::SentBeforeWeJoined`] for that).
     HistoricalMessage = 5,
+
+    /// The keys for this event are intentionally withheld.
+    /// The sender has refused to share the key because our device does not meet
+    /// the sender's security requirements.
+    WithheldForUnverifiedOrInsecureDevice = 6,
+
+    /// The keys for this event are missing, likely because the sender was
+    /// unable to share them (e.g., failure to establish an Olm 1:1
+    /// channel). Alternatively, the sender may have deliberately excluded
+    /// this device by cherry-picking and blocking it, no action can be taken on
+    /// our side.
+    WithheldBySender = 7,
 }
 
 /// MSC4115 membership info in the unsigned area.
@@ -98,7 +110,13 @@ impl UtdCause {
     ) -> Self {
         // TODO: in future, use more information to give a richer answer. E.g.
         match unable_to_decrypt_info.reason {
-            UnableToDecryptReason::MissingMegolmSession
+            UnableToDecryptReason::MissingMegolmSession(Some(reason)) => match reason {
+                WithheldReason::TrustRequirementMismatch => {
+                    UtdCause::WithheldForUnverifiedOrInsecureDevice
+                }
+                WithheldReason::Other => UtdCause::WithheldBySender,
+            },
+            UnableToDecryptReason::MissingMegolmSession(None)
             | UnableToDecryptReason::UnknownMegolmMessageIndex => {
                 // Look in the unsigned area for a `membership` field.
                 if let Some(unsigned) =
@@ -162,7 +180,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession,
+                    reason: UnableToDecryptReason::MissingMegolmSession(None),
                 }
             ),
             UtdCause::Unknown
@@ -178,7 +196,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown
@@ -195,7 +213,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown
@@ -212,7 +230,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown
@@ -229,7 +247,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown
@@ -246,7 +264,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::SentBeforeWeJoined
@@ -280,7 +298,7 @@ mod tests {
                 some_crypto_context_info(),
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::SentBeforeWeJoined
@@ -356,7 +374,7 @@ mod tests {
                 older_than_event_device,
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown
@@ -375,7 +393,7 @@ mod tests {
                 newer_than_event_device,
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::HistoricalMessage
@@ -493,7 +511,7 @@ mod tests {
                 crypto_context_info,
                 &UnableToDecryptInfo {
                     session_id: None,
-                    reason: UnableToDecryptReason::MissingMegolmSession
+                    reason: UnableToDecryptReason::MissingMegolmSession(None)
                 }
             ),
             UtdCause::Unknown

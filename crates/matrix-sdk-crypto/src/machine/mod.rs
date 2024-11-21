@@ -23,7 +23,7 @@ use matrix_sdk_common::{
     deserialized_responses::{
         AlgorithmInfo, DecryptedRoomEvent, DeviceLinkProblem, EncryptionInfo, UnableToDecryptInfo,
         UnableToDecryptReason, UnsignedDecryptionResult, UnsignedEventLocation, VerificationLevel,
-        VerificationState,
+        VerificationState, WithheldReason,
     },
     BoxFuture,
 };
@@ -86,6 +86,7 @@ use crate::{
             room_key::{MegolmV1AesSha2Content, RoomKeyContent},
             room_key_withheld::{
                 MegolmV1AesSha2WithheldContent, RoomKeyWithheldContent, RoomKeyWithheldEvent,
+                WithheldCode,
             },
             ToDeviceEvents,
         },
@@ -2582,7 +2583,13 @@ fn megolm_error_to_utd_info(
     let reason = match error {
         EventError(_) => UnableToDecryptReason::MalformedEncryptedEvent,
         Decode(_) => UnableToDecryptReason::MalformedEncryptedEvent,
-        MissingRoomKey(_) => UnableToDecryptReason::MissingMegolmSession,
+        MissingRoomKey(maybe_withheld) => match maybe_withheld {
+            Some(WithheldCode::Unverified) => UnableToDecryptReason::MissingMegolmSession(Some(
+                WithheldReason::TrustRequirementMismatch,
+            )),
+            Some(_) => UnableToDecryptReason::MissingMegolmSession(Some(WithheldReason::Other)),
+            _ => UnableToDecryptReason::MissingMegolmSession(None),
+        },
         Decryption(DecryptionError::UnknownMessageIndex(_, _)) => {
             UnableToDecryptReason::UnknownMegolmMessageIndex
         }

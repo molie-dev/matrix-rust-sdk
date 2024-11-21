@@ -669,6 +669,23 @@ fn unknown_utd_reason() -> UnableToDecryptReason {
     UnableToDecryptReason::Unknown
 }
 
+/// A room key might be missing because the sender refused to share it or was
+/// not technically able to share it.
+/// In the protocol this is reflected by clients sending `m.room_key.withheld`
+/// to the participant that won't receive the key.
+/// We only want here to consider the subset of codes that clients should
+/// use to display specific UX.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WithheldReason {
+    /// When the sender refuses to send the key because his security settings in
+    /// that room are not met by your device. Could be that your device is
+    /// not cross-signed (insecure device) or that you are not verified by
+    /// the sender.
+    TrustRequirementMismatch,
+    /// Other reasons. Like fail to establish a secure channel to share the key,
+    /// or if for some reason our device is blocked.
+    Other,
+}
 /// Reason code for a decryption failure
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum UnableToDecryptReason {
@@ -684,9 +701,7 @@ pub enum UnableToDecryptReason {
 
     /// Decryption failed because we're missing the megolm session that was used
     /// to encrypt the event.
-    ///
-    /// TODO: support withheld codes?
-    MissingMegolmSession,
+    MissingMegolmSession(Option<WithheldReason>),
 
     /// Decryption failed because, while we have the megolm session that was
     /// used to encrypt the message, it is ratcheted too far forward.
@@ -718,7 +733,12 @@ impl UnableToDecryptReason {
     /// Returns true if this UTD is due to a missing room key (and hence might
     /// resolve itself if we wait a bit.)
     pub fn is_missing_room_key(&self) -> bool {
-        matches!(self, Self::MissingMegolmSession | Self::UnknownMegolmMessageIndex)
+        match self {
+            // Return true only if the key is not withheld on purpose.
+            Self::MissingMegolmSession(None) => true,
+            Self::UnknownMegolmMessageIndex => true,
+            _ => false,
+        }
     }
 }
 

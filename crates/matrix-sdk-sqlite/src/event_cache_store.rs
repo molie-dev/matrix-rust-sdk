@@ -3,8 +3,12 @@ use std::{borrow::Cow, fmt, path::Path, sync::Arc};
 use async_trait::async_trait;
 use deadpool_sqlite::{Object as SqliteAsyncConn, Pool as SqlitePool, Runtime};
 use matrix_sdk_base::{
-    event_cache::{store::EventCacheStore, Event, Gap},
-    linked_chunk::{ChunkIdentifier, Update},
+    deserialized_responses::SyncTimelineEvent,
+    event_cache::{
+        store::{EventCacheStore, DEFAULT_CHUNK_CAPACITY},
+        Event, Gap,
+    },
+    linked_chunk::{ChunkIdentifier, LinkedChunk, LinkedChunkBuilder, Update},
     media::{MediaRequestParameters, UniqueKey},
 };
 use matrix_sdk_store_encryption::StoreCipher;
@@ -413,6 +417,106 @@ impl EventCacheStore for SqliteEventCacheStore {
         Ok(())
     }
 
+    async fn reload_linked_chunk(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<LinkedChunk<DEFAULT_CHUNK_CAPACITY, Event, Gap>>, Self::Error> {
+        let room_id = room_id.to_owned();
+        let hashed_room_id = self.encode_key(keys::LINKED_CHUNKS, &room_id);
+
+        let this = self.clone();
+
+        let result = self
+            .acquire()
+            .await?
+            .with_transaction(move |txn| -> Result<_, Self::Error> {
+                let mut builder = LinkedChunkBuilder::new();
+
+                for data in txn
+                    .prepare(
+                        "SELECT id, previous, next, type FROM linked_chunks WHERE room_id = ?",
+                    )?
+                    .query_map((&hashed_room_id,), |row| {
+                        Ok((
+                            row.get::<_, u64>(0)?,
+                            row.get::<_, Option<u64>>(1)?,
+                            row.get::<_, Option<u64>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })?
+                {
+                    let (id, previous, next, chunk_type) = data?;
+
+                    trace!(%room_id, "reloaded chunk {id} of type {chunk_type}");
+
+                    match chunk_type.as_str() {
+                        "G" => {
+                            // It's a gap! There's at most one row for it in the database, so a
+                            // call to `query_row` is sufficient.
+                            let encoded_prev_token: Vec<u8> = txn.query_row(
+                                "SELECT prev_token FROM gaps WHERE chunk_id = ? AND room_id = ?",
+                                (id, &hashed_room_id),
+                                |row| row.get(0),
+                            )?;
+                            let prev_token_bytes = this.decode_value(&encoded_prev_token)?;
+                            let prev_token = serde_json::from_slice(&prev_token_bytes)?;
+
+                            let previous = previous.map(ChunkIdentifier::new);
+                            let next = next.map(ChunkIdentifier::new);
+                            let id = ChunkIdentifier::new(id);
+
+                            let gap = Gap { prev_token };
+                            builder.push_gap(previous, id, next, gap);
+                        }
+
+                        "E" => {
+                            // It's events!
+
+                            // Retrieve all the events from the database.
+                            let mut events = Vec::new();
+
+                            for event_data in txn
+                                .prepare(
+                                    r#"
+                                    SELECT raw FROM events
+                                    WHERE chunk_id = ? AND room_id = ?
+                                    ORDER BY position ASC
+                                "#,
+                                )?
+                                .query_map((id, &hashed_room_id), |row| row.get::<_, Vec<u8>>(0))?
+                            {
+                                let encoded_raw = event_data?;
+                                let raw = this.decode_value(&encoded_raw)?;
+                                let raw_event = serde_json::from_slice(&raw)?;
+
+                                // TODO: keep encryption information around!
+                                events.push(SyncTimelineEvent::new(raw_event));
+                            }
+
+                            let previous = previous.map(ChunkIdentifier::new);
+                            let next = next.map(ChunkIdentifier::new);
+                            let id = ChunkIdentifier::new(id);
+
+                            builder.push_items(previous, id, next, events);
+                        }
+
+                        _ => {
+                            // It's an error!
+                            // TODO: be polite and signal that to the caller
+                            unreachable!()
+                        }
+                    }
+                }
+
+                builder.with_update_history();
+
+                Ok(builder.build().expect("TODO error handling"))
+            })
+            .await?;
+
+        Ok(result)
+    }
+
     async fn add_media_content(
         &self,
         request: &MediaRequestParameters,
@@ -513,15 +617,15 @@ fn insert_chunk(
     // First, insert the new chunk.
     txn.execute(
         r#"
-            INSERT INTO linked_chunks(id, previous, next, type, room_id)
+            INSERT INTO linked_chunks(id, room_id, previous, next, type)
             VALUES (?, ?, ?, ?, ?)
         "#,
         (
             new.index(),
+            room_id,
             previous.map(ChunkIdentifier::index),
             next.map(ChunkIdentifier::index),
             type_str,
-            room_id,
         ),
     )?;
 
@@ -531,9 +635,9 @@ fn insert_chunk(
             r#"
                 UPDATE linked_chunks
                 SET next = ?
-                WHERE id = ?
+                WHERE id = ? AND room_id = ?
             "#,
-            (new.index(), previous.index()),
+            (new.index(), previous.index(), room_id),
         )?;
     }
 
@@ -543,9 +647,9 @@ fn insert_chunk(
             r#"
                 UPDATE linked_chunks
                 SET previous = ?
-                WHERE id = ?
+                WHERE id = ? AND room_id = ?
             "#,
-            (new.index(), next.index()),
+            (new.index(), next.index(), room_id),
         )?;
     }
 

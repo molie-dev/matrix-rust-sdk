@@ -61,12 +61,14 @@ impl fmt::Debug for RoomEventCache {
 
 impl RoomEventCache {
     /// Create a new [`RoomEventCache`] using the given room and store.
-    pub(super) fn new(
+    pub(super) async fn new(
         client: WeakClient,
         room_id: OwnedRoomId,
         all_events_cache: Arc<RwLock<AllEventsCache>>,
-    ) -> Self {
-        Self { inner: Arc::new(RoomEventCacheInner::new(client, room_id, all_events_cache)) }
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: Arc::new(RoomEventCacheInner::new(client, room_id, all_events_cache).await?),
+        })
     }
 
     /// Subscribe to room updates for this room, after getting the initial list
@@ -229,28 +231,28 @@ pub(super) struct RoomEventCacheInner {
 impl RoomEventCacheInner {
     /// Creates a new cache for a room, and subscribes to room updates, so as
     /// to handle new timeline events.
-    fn new(
+    async fn new(
         client: WeakClient,
         room_id: OwnedRoomId,
         all_events_cache: Arc<RwLock<AllEventsCache>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let sender = Sender::new(32);
 
         let event_cache_store =
             client.get().expect("TODO replace with error handling?").event_cache_store().clone();
         let weak_room = WeakRoom::new(client, room_id.clone());
 
-        Self {
+        Ok(Self {
             room_id: weak_room.room_id().to_owned(),
             state: RwLock::new(RoomEventCacheState {
-                events: RoomEvents::new(room_id, event_cache_store),
+                events: RoomEvents::new(room_id, event_cache_store).await?,
                 waited_for_initial_prev_token: false,
             }),
             all_events: all_events_cache,
             sender,
             pagination_batch_token_notifier: Default::default(),
             paginator: Paginator::new(weak_room),
-        }
+        })
     }
 
     fn handle_account_data(&self, account_data: Vec<Raw<AnyRoomAccountDataEvent>>) {

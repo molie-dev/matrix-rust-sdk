@@ -448,7 +448,8 @@ impl EventCacheInner {
                     self.client.clone(),
                     room_id.to_owned(),
                     self.all_events.clone(),
-                );
+                )
+                .await?;
 
                 by_room_guard.insert(room_id.to_owned(), room_event_cache.clone());
 

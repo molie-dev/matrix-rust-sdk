@@ -51,21 +51,30 @@ pub struct RoomEvents {
 
 impl RoomEvents {
     /// Build a new [`RoomEvents`] struct with zero events.
-    pub fn new(room: OwnedRoomId, store: EventCacheStoreLock) -> Self {
-        let mut chunks = LinkedChunk::new_with_update_history();
+    pub async fn new(
+        room: OwnedRoomId,
+        store: EventCacheStoreLock,
+    ) -> Result<Self, EventCacheError> {
+        let locked_store = store.lock().await?;
+
+        let mut chunks = locked_store
+            .reload_linked_chunk(&room)
+            .await?
+            .unwrap_or_else(|| LinkedChunk::new_with_update_history());
+
         let chunks_updates_as_vectordiffs = chunks
             .as_vector()
             // SAFETY: The `LinkedChunk` has been built with `new_with_update_history`, so
             // `as_vector` must return `Some(…)`.
             .expect("`LinkedChunk` must have been constructor with `new_with_update_history`");
 
-        Self {
+        Ok(Self {
             chunks,
-            chunks_updates_as_vectordiffs,
             deduplicator: Deduplicator::new(),
+            chunks_updates_as_vectordiffs,
             room,
             store,
-        }
+        })
     }
 
     /// Create a new [`RoomEvents`] for the sake of testing.

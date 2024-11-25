@@ -240,6 +240,7 @@ impl RoomEventCacheInner {
 
         let event_cache_store =
             client.get().expect("TODO replace with error handling?").event_cache_store().clone();
+
         let weak_room = WeakRoom::new(client, room_id.clone());
 
         Ok(Self {
@@ -359,10 +360,11 @@ impl RoomEventCacheInner {
         let mut state = self.state.write().await;
 
         // Reset the room's state.
-        state.reset().await?;
+        // TODO(bnjbvr)
+        //state.reset().await?;
 
         // Propagate to observers.
-        let _ = self.sender.send(RoomEventCacheUpdate::Clear);
+        //let _ = self.sender.send(RoomEventCacheUpdate::Clear);
 
         // Push the new events.
         self.append_events_locked_impl(
@@ -375,7 +377,7 @@ impl RoomEventCacheInner {
         .await?;
 
         // Reset the paginator status to initial.
-        self.paginator.set_idle_state(PaginatorState::Initial, prev_batch, None)?;
+        //self.paginator.set_idle_state(PaginatorState::Initial, prev_batch, None)?;
 
         Ok(())
     }

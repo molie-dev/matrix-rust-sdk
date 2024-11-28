@@ -17,7 +17,10 @@ use std::{collections::BTreeMap, fmt};
 use ruma::{
     events::{AnyMessageLikeEvent, AnySyncTimelineEvent, AnyTimelineEvent},
     push::Action,
-    serde::{JsonObject, Raw},
+    serde::{
+        AsRefStr, AsStrAsRefStr, DebugAsRefStr, DeserializeFromCowStr, FromString, JsonObject, Raw,
+        SerializeAsRefStr,
+    },
     DeviceKeyAlgorithm, OwnedDeviceId, OwnedEventId, OwnedUserId,
 };
 use serde::{Deserialize, Serialize};
@@ -739,6 +742,80 @@ impl UnableToDecryptReason {
             Self::UnknownMegolmMessageIndex => true,
             _ => false,
         }
+    }
+}
+
+/// A machine-readable code for why the megolm key was not sent.
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    AsStrAsRefStr,
+    AsRefStr,
+    FromString,
+    DebugAsRefStr,
+    SerializeAsRefStr,
+    DeserializeFromCowStr,
+)]
+#[non_exhaustive]
+pub enum WithheldCode {
+    /// the user/device was blacklisted.
+    #[ruma_enum(rename = "m.blacklisted")]
+    Blacklisted,
+
+    /// the user/devices is unverified.
+    #[ruma_enum(rename = "m.unverified")]
+    Unverified,
+
+    /// The user/device is not allowed have the key. For example, this would
+    /// usually be sent in response to a key request if the user was not in
+    /// the room when the message was sent.
+    #[ruma_enum(rename = "m.unauthorised")]
+    Unauthorised,
+
+    /// Sent in reply to a key request if the device that the key is requested
+    /// from does not have the requested key.
+    #[ruma_enum(rename = "m.unavailable")]
+    Unavailable,
+
+    /// An olm session could not be established.
+    /// This may happen, for example, if the sender was unable to obtain a
+    /// one-time key from the recipient.
+    #[ruma_enum(rename = "m.no_olm")]
+    NoOlm,
+
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}
+
+impl fmt::Display for WithheldCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        let string = match self {
+            WithheldCode::Blacklisted => "The sender has blocked you.",
+            WithheldCode::Unverified => "The sender has disabled encrypting to unverified devices.",
+            WithheldCode::Unauthorised => "You are not authorised to read the message.",
+            WithheldCode::Unavailable => "The requested key was not found.",
+            WithheldCode::NoOlm => "Unable to establish a secure channel.",
+            _ => self.as_str(),
+        };
+
+        f.write_str(string)
+    }
+}
+
+// Wrapper around `Box<str>` that cannot be used in a meaningful way outside of
+// this crate. Used for string enums because their `_Custom` variant can't be
+// truly private (only `#[doc(hidden)]`).
+#[doc(hidden)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// XXX had to make the field public to make ruma `StringEnum` macro happy.
+pub struct PrivOwnedStr(pub Box<str>);
+
+#[cfg(not(tarpaulin_include))]
+impl fmt::Debug for PrivOwnedStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 

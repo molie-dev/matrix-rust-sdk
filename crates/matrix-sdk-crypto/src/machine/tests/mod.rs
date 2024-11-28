@@ -19,7 +19,7 @@ use futures_util::{pin_mut, FutureExt, StreamExt};
 use itertools::Itertools;
 use matrix_sdk_common::deserialized_responses::{
     UnableToDecryptInfo, UnableToDecryptReason, UnsignedDecryptionResult, UnsignedEventLocation,
-    WithheldReason,
+    WithheldCode, WithheldReason,
 };
 use matrix_sdk_test::{async_test, message_like_event_content, ruma_response_from_json, test_json};
 use ruma::{
@@ -62,9 +62,7 @@ use crate::{
     types::{
         events::{
             room::encrypted::{EncryptedToDeviceEvent, ToDeviceEncryptedEventContent},
-            room_key_withheld::{
-                MegolmV1AesSha2WithheldContent, RoomKeyWithheldContent, WithheldCode,
-            },
+            room_key_withheld::{MegolmV1AesSha2WithheldContent, RoomKeyWithheldContent},
             ToDeviceEvent,
         },
         requests::{AnyOutgoingRequest, ToDeviceRequest},

@@ -23,7 +23,7 @@ use matrix_sdk_common::{
     deserialized_responses::{
         AlgorithmInfo, DecryptedRoomEvent, DeviceLinkProblem, EncryptionInfo, UnableToDecryptInfo,
         UnableToDecryptReason, UnsignedDecryptionResult, UnsignedEventLocation, VerificationLevel,
-        VerificationState, WithheldReason,
+        VerificationState, WithheldCode, WithheldReason,
     },
     BoxFuture,
 };
@@ -86,7 +86,6 @@ use crate::{
             room_key::{MegolmV1AesSha2Content, RoomKeyContent},
             room_key_withheld::{
                 MegolmV1AesSha2WithheldContent, RoomKeyWithheldContent, RoomKeyWithheldEvent,
-                WithheldCode,
             },
             ToDeviceEvents,
         },

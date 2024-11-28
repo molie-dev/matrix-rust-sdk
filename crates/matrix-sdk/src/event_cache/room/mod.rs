@@ -630,15 +630,28 @@ pub(super) use private::RoomEventCacheState;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use assert_matches::assert_matches;
+    use assert_matches2::assert_let;
+    use matrix_sdk_base::{
+        linked_chunk::ChunkContent,
+        store::StoreConfig,
+        sync::{JoinedRoomUpdate, Timeline},
+    };
     use matrix_sdk_common::deserialized_responses::SyncTimelineEvent;
-    use matrix_sdk_test::{async_test, event_factory::EventFactory};
+    use matrix_sdk_sqlite::SqliteEventCacheStore;
+    use matrix_sdk_test::{async_test, event_factory::EventFactory, ALICE};
     use ruma::{
         event_id,
-        events::{relation::RelationType, room::message::RoomMessageEventContentWithoutRelation},
+        events::{
+            relation::RelationType, room::message::RoomMessageEventContentWithoutRelation,
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+        },
         room_id, user_id, RoomId,
     };
 
-    use crate::test_utils::logged_in_client;
+    use crate::test_utils::{client::MockClientBuilder, logged_in_client};
 
     #[async_test]
     async fn test_event_with_redaction_relation() {
@@ -873,6 +886,87 @@ mod tests {
         assert_eq!(related_event_id, related_id);
         let related_event_id = related_events[1].event_id().unwrap();
         assert_eq!(related_event_id, associated_related_id);
+    }
+
+    #[async_test]
+    async fn test_storage_propagation() {
+        let room_id = room_id!("!galette:saucisse.bzh");
+        let f = EventFactory::new().room(room_id).sender(user_id!("@ben:saucisse.bzh"));
+
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let db_path = tempdir.path().join("cache");
+
+        let event_cache_store = Arc::new(SqliteEventCacheStore::open(db_path, None).await.unwrap());
+
+        let client = MockClientBuilder::new("http://localhost".to_owned())
+            .store_config(
+                StoreConfig::new("hodlor".to_owned()).event_cache_store(event_cache_store.clone()),
+            )
+            .build()
+            .await;
+
+        let event_cache = client.event_cache();
+
+        // Don't forget to subscribe and like^W enable storage!
+        event_cache.subscribe().unwrap();
+        event_cache.enable_storage().unwrap();
+
+        client.base_client().get_or_create_room(room_id, matrix_sdk_base::RoomState::Joined);
+        let room = client.get_room(room_id).unwrap();
+
+        let (room_event_cache, _drop_handles) = room.event_cache().await.unwrap();
+
+        // Propagate an update for a message and a prev-batch token.
+        let timeline = Timeline {
+            limited: false,
+            prev_batch: Some("raclette".to_owned()),
+            events: vec![f.text_msg("hey yo").sender(*ALICE).into_sync()],
+        };
+
+        room_event_cache
+            .inner
+            .handle_joined_room_update(JoinedRoomUpdate { timeline, ..Default::default() })
+            .await
+            .unwrap();
+
+        let mut chunks = event_cache_store.load_chunks(room_id).await.unwrap();
+        assert_eq!(chunks.len(), 3);
+
+        // Invariant: there's always an empty items chunk at the beginning.
+        let c = chunks.remove(0);
+
+        let first_chunk_id = c.id;
+        let next_chunk_id = c.next.expect("must have a next chunk");
+
+        assert_matches!(c.content, ChunkContent::Items(events) => {
+            assert_eq!(events.len(), 0)
+        });
+
+        // Then we have the gap.
+        let c = chunks.remove(0);
+
+        assert_eq!(c.previous.unwrap(), first_chunk_id);
+        let second_chunk_id = c.id;
+        assert_eq!(next_chunk_id, second_chunk_id);
+        let next_chunk_id = c.next.unwrap();
+
+        assert_matches!(c.content, ChunkContent::Gap(gap) => {
+            assert_eq!(gap.prev_token, "raclette");
+        });
+
+        // Then we have the stored event.
+        let c = chunks.remove(0);
+
+        assert_eq!(c.previous.unwrap(), second_chunk_id);
+        assert_eq!(next_chunk_id, c.id);
+        assert!(c.next.is_none());
+
+        assert_matches!(c.content, ChunkContent::Items(events) => {
+            assert_eq!(events.len(), 1);
+            let deserialized = events[0].raw().deserialize().unwrap();
+            assert_let!(AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) = deserialized);
+            assert_eq!(msg.as_original().unwrap().content.body(), "hey yo");
+        });
     }
 
     async fn assert_relations(

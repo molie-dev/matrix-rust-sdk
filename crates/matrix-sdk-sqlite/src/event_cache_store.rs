@@ -144,7 +144,7 @@ impl SqliteEventCacheStore {
         ))
     }
 
-    async fn load_chunks(&self, room_id: &RoomId) -> Result<Vec<RawLinkedChunk>> {
+    pub async fn load_chunks(&self, room_id: &RoomId) -> Result<Vec<RawLinkedChunk>> {
         let room_id = room_id.to_owned();
         let hashed_room_id = self.encode_key(keys::LINKED_CHUNKS, &room_id);
 
@@ -314,12 +314,17 @@ impl TransactionExtForLinkedChunks for Transaction<'_> {
     }
 }
 
-struct RawLinkedChunk {
-    content: ChunkContent<Event, Gap>,
-
-    previous: Option<ChunkIdentifier>,
-    id: ChunkIdentifier,
-    next: Option<ChunkIdentifier>,
+/// A raw linked chunk, where links are materialized with [`ChunkIdentifier`]
+/// instead of pointers.
+pub struct RawLinkedChunk {
+    /// The content of the chunk.
+    pub content: ChunkContent<Event, Gap>,
+    /// Link to the previous chunk.
+    pub previous: Option<ChunkIdentifier>,
+    /// Identifier of the current chunk.
+    pub id: ChunkIdentifier,
+    /// Link to the next chunk.
+    pub next: Option<ChunkIdentifier>,
 }
 
 async fn create_pool(path: &Path) -> Result<SqlitePool, OpenStoreError> {

@@ -20,10 +20,11 @@ use ruma::{
         call::notify,
         room::{
             avatar::ImageInfo as RumaAvatarImageInfo,
-            message::RoomMessageEventContentWithoutRelation,
-            power_levels::RoomPowerLevels as RumaPowerLevels, MediaSource,
+            message::{MessageType, RoomMessageEventContentWithoutRelation},
+            power_levels::RoomPowerLevels as RumaPowerLevels,
+            MediaSource,
         },
-        TimelineEventType,
+        AnyMessageLikeEventContent, AnySyncTimelineEvent, TimelineEventType,
     },
     EventId, Int, OwnedDeviceId, OwnedUserId, RoomAliasId, UserId,
 };
@@ -257,6 +258,28 @@ impl Room {
             .build()
             .await?;
 
+        Ok(Timeline::new(timeline))
+    }
+
+    pub async fn media_events_timeline(&self) -> Result<Arc<Timeline>, ClientError> {
+        let room = &self.inner;
+
+        let mut builder = matrix_sdk_ui::timeline::Timeline::builder(room);
+        builder = builder.event_filter(move |event, _| match event {
+            AnySyncTimelineEvent::MessageLike(msg) => match msg.original_content() {
+                Some(AnyMessageLikeEventContent::RoomMessage(content)) => matches!(
+                    content.msgtype,
+                    MessageType::Audio(_)
+                        | MessageType::File(_)
+                        | MessageType::Image(_)
+                        | MessageType::Video(_)
+                ),
+                _ => false,
+            },
+            _ => false,
+        });
+
+        let timeline = builder.build().await?;
         Ok(Timeline::new(timeline))
     }
 

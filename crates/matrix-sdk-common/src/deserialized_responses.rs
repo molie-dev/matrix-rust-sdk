@@ -664,12 +664,24 @@ pub struct UnableToDecryptInfo {
     pub session_id: Option<String>,
 
     /// Reason code for the decryption failure
-    #[serde(default = "unknown_utd_reason")]
+    #[serde(default = "unknown_utd_reason", deserialize_with = "ok_reason_or_default")]
     pub reason: UnableToDecryptReason,
 }
 
 fn unknown_utd_reason() -> UnableToDecryptReason {
     UnableToDecryptReason::Unknown
+}
+
+/// Provides basic backward compatibility for deserializing older serialized
+/// `UnableToDecryptReason` values. If the serialized format has changed in a
+/// way that causes deserialization to fail, the reason will default to
+/// `Unknown`.
+fn ok_reason_or_default<'de, D>(d: D) -> Result<UnableToDecryptReason, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: serde_json::Value = Deserialize::deserialize(d)?;
+    Ok(UnableToDecryptReason::deserialize(v).unwrap_or(UnableToDecryptReason::Unknown))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1112,5 +1124,59 @@ mod tests {
                 })
             });
         });
+    }
+
+    #[test]
+    fn sync_timeline_event_deserialisation_migration_for_withheld() {
+        // Old serialized version was
+        //    "utd_info": {
+        //         "reason": "MissingMegolmSession",
+        //         "session_id": "session000"
+        //       }
+
+        // The new version would be
+        //      "utd_info": {
+        //         "reason": {
+        //           "MissingMegolmSession": null
+        //         },
+        //         "session_id": "session000"
+        //       }
+
+        let serialized = json!({
+             "kind": {
+                "UnableToDecrypt": {
+                  "event": {
+                    "content": {
+                      "algorithm": "m.megolm.v1.aes-sha2",
+                      "ciphertext": "AwgAEoABzL1JYhqhjW9jXrlT3M6H8mJ4qffYtOQOnPuAPNxsuG20oiD/Fnpv6jnQGhU6YbV9pNM+1mRnTvxW3CbWOPjLKqCWTJTc7Q0vDEVtYePg38ncXNcwMmfhgnNAoW9S7vNs8C003x3yUl6NeZ8bH+ci870BZL+kWM/lMl10tn6U7snNmSjnE3ckvRdO+11/R4//5VzFQpZdf4j036lNSls/WIiI67Fk9iFpinz9xdRVWJFVdrAiPFwb8L5xRZ8aX+e2JDMlc1eW8gk",
+                      "device_id": "SKCGPNUWAU",
+                      "sender_key": "Gim/c7uQdSXyrrUbmUOrBT6sMC0gO7QSLmOK6B7NOm0",
+                      "session_id": "hgLyeSqXfb8vc5AjQLsg6TSHVu0HJ7HZ4B6jgMvxkrs"
+                    },
+                    "event_id": "$xxxxx:example.org",
+                    "origin_server_ts": 2189,
+                    "room_id": "!someroom:example.com",
+                    "sender": "@carl:example.com",
+                    "type": "m.room.message"
+                  },
+                  "utd_info": {
+                    "reason": "MissingMegolmSession",
+                    "session_id": "session000"
+                  }
+                }
+              }
+        });
+
+        let result = serde_json::from_value(serialized);
+        assert!(result.is_ok());
+
+        // should have migrated to Unknown reason
+        let event: SyncTimelineEvent = result.unwrap();
+        assert_matches!(
+            event.kind,
+            TimelineEventKind::UnableToDecrypt { utd_info, .. }=> {
+                assert_eq!(utd_info.reason, UnableToDecryptReason::Unknown);
+            }
+        )
     }
 }

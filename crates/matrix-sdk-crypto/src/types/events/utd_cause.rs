@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(
             UtdCause::determine(
                 &raw_event(json!({})),
-                device_new_with_backup(),
+                device_old_no_backup(),
                 &missing_megolm_session()
             ),
             UtdCause::Unknown
@@ -391,6 +391,13 @@ mod tests {
 
     fn raw_event(value: serde_json::Value) -> Raw<AnySyncTimelineEvent> {
         Raw::from_json(to_raw_value(&value).unwrap())
+    }
+
+    fn device_old_no_backup() -> CryptoContextInfo {
+        CryptoContextInfo {
+            device_creation_ts: MilliSecondsSinceUnixEpoch((1111).try_into().unwrap()),
+            is_backup_configured: false,
+        }
     }
 
     fn device_old_with_backup() -> CryptoContextInfo {

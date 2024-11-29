@@ -19,7 +19,7 @@ use futures_util::{pin_mut, FutureExt, StreamExt};
 use itertools::Itertools;
 use matrix_sdk_common::deserialized_responses::{
     UnableToDecryptInfo, UnableToDecryptReason, UnsignedDecryptionResult, UnsignedEventLocation,
-    WithheldCode, WithheldReason,
+    WithheldCode,
 };
 use matrix_sdk_test::{async_test, message_like_event_content, ruma_response_from_json, test_json};
 use ruma::{
@@ -684,7 +684,7 @@ async fn test_withheld_unverified() {
     assert!(utd_info.session_id.is_some());
     assert_eq!(
         utd_info.reason,
-        UnableToDecryptReason::MissingMegolmSession(Some(WithheldReason::TrustRequirementMismatch))
+        UnableToDecryptReason::MissingMegolmSession(Some(WithheldCode::Unverified))
     );
 }
 

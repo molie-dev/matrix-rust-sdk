@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use matrix_sdk_common::deserialized_responses::{
-    UnableToDecryptInfo, UnableToDecryptReason, VerificationLevel, WithheldReason,
+    UnableToDecryptInfo, UnableToDecryptReason, VerificationLevel, WithheldCode,
 };
 use ruma::{events::AnySyncTimelineEvent, serde::Raw, MilliSecondsSinceUnixEpoch};
 use serde::Deserialize;
@@ -109,12 +109,10 @@ impl UtdCause {
         unable_to_decrypt_info: &UnableToDecryptInfo,
     ) -> Self {
         // TODO: in future, use more information to give a richer answer. E.g.
-        match unable_to_decrypt_info.reason {
+        match &unable_to_decrypt_info.reason {
             UnableToDecryptReason::MissingMegolmSession(Some(reason)) => match reason {
-                WithheldReason::TrustRequirementMismatch => {
-                    UtdCause::WithheldForUnverifiedOrInsecureDevice
-                }
-                WithheldReason::Other => UtdCause::WithheldBySender,
+                WithheldCode::Unverified => UtdCause::WithheldForUnverifiedOrInsecureDevice,
+                _ => UtdCause::WithheldBySender,
             },
             UnableToDecryptReason::MissingMegolmSession(None)
             | UnableToDecryptReason::UnknownMegolmMessageIndex => {

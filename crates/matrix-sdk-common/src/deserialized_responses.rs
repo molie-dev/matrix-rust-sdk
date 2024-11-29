@@ -672,24 +672,6 @@ fn unknown_utd_reason() -> UnableToDecryptReason {
     UnableToDecryptReason::Unknown
 }
 
-// /// A room key might be missing because the sender refused to share it or was
-// /// not technically able to share it.
-// /// In the protocol this is reflected by clients sending
-// `m.room_key.withheld` /// to the participant that won't receive the key.
-// /// We only want here to consider the subset of codes that clients should
-// /// use to display specific UX.
-// #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-// pub enum WithheldReason {
-//     /// When the sender refuses to send the key because his security settings
-// in     /// that room are not met by your device. Could be that your device is
-//     /// not cross-signed (insecure device) or that you are not verified by
-//     /// the sender.
-//     TrustRequirementMismatch,
-//     /// Other reasons. Like fail to establish a secure channel to share the
-// key,     /// or if for some reason our device is blocked.
-//     Other,
-// }
-/// Reason code for a decryption failure
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum UnableToDecryptReason {
     /// The reason for the decryption failure is unknown. This is only intended
@@ -704,7 +686,7 @@ pub enum UnableToDecryptReason {
 
     /// Decryption failed because we're missing the megolm session that was used
     /// to encrypt the event. If the key was withheld on purpose the
-    /// associated code is attached.
+    /// associated code is attached, None means no withheld code was received.
     MissingMegolmSession(Option<WithheldCode>),
 
     /// Decryption failed because, while we have the megolm session that was

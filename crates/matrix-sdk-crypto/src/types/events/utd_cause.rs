@@ -59,6 +59,7 @@ pub enum UtdCause {
     HistoricalMessage = 5,
 
     /// The keys for this event are intentionally withheld.
+    ///
     /// The sender has refused to share the key because our device does not meet
     /// the sender's security requirements.
     WithheldForUnverifiedOrInsecureDevice = 6,

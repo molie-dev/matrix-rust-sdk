@@ -53,6 +53,12 @@ pub enum Membership {
     Knocked,
 }
 
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum MediaEventsTimelineFilter {
+    ImageAndVideo,
+    FileAndAudio,
+}
+
 impl From<RoomState> for Membership {
     fn from(value: RoomState) -> Self {
         match value {
@@ -261,23 +267,37 @@ impl Room {
         Ok(Timeline::new(timeline))
     }
 
-    pub async fn media_events_timeline(&self) -> Result<Arc<Timeline>, ClientError> {
+    pub async fn media_events_timeline(
+        &self,
+        filter: MediaEventsTimelineFilter,
+    ) -> Result<Arc<Timeline>, ClientError> {
         let room = &self.inner;
 
         let mut builder = matrix_sdk_ui::timeline::Timeline::builder(room);
-        builder = builder.event_filter(move |event, _| match event {
-            AnySyncTimelineEvent::MessageLike(msg) => match msg.original_content() {
-                Some(AnyMessageLikeEventContent::RoomMessage(content)) => matches!(
-                    content.msgtype,
-                    MessageType::Audio(_)
-                        | MessageType::File(_)
-                        | MessageType::Image(_)
-                        | MessageType::Video(_)
-                ),
-                _ => false,
-            },
-            _ => false,
-        });
+        match filter {
+            MediaEventsTimelineFilter::ImageAndVideo => {
+                builder = builder.event_filter(move |event, _| match event {
+                    AnySyncTimelineEvent::MessageLike(msg) => match msg.original_content() {
+                        Some(AnyMessageLikeEventContent::RoomMessage(content)) => {
+                            matches!(content.msgtype, |MessageType::Image(_)| MessageType::Video(_))
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                });
+            }
+            MediaEventsTimelineFilter::FileAndAudio => {
+                builder = builder.event_filter(move |event, _| match event {
+                    AnySyncTimelineEvent::MessageLike(msg) => match msg.original_content() {
+                        Some(AnyMessageLikeEventContent::RoomMessage(content)) => {
+                            matches!(content.msgtype, MessageType::Audio(_) | MessageType::File(_))
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                });
+            }
+        }
 
         let timeline = builder.build().await?;
         Ok(Timeline::new(timeline))

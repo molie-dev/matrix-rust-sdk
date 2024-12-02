@@ -736,12 +736,9 @@ impl UnableToDecryptReason {
     /// Returns true if this UTD is due to a missing room key (and hence might
     /// resolve itself if we wait a bit.)
     pub fn is_missing_room_key(&self) -> bool {
-        match self {
-            // Return true only if the key is not withheld on purpose.
-            Self::MissingMegolmSession(None) => true,
-            Self::UnknownMegolmMessageIndex => true,
-            _ => false,
-        }
+        // In case of MissingMegolmSession with a withheld code we return false here given that
+        // this API is used to decide if waiting a bit will help.
+        matches!(self, Self::MissingMegolmSession(None) | Self::UnknownMegolmMessageIndex)
     }
 }
 
